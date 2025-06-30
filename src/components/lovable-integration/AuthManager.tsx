@@ -1,11 +1,12 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { ExternalLink } from 'lucide-react';
+import { ExternalLink, Key, Github } from 'lucide-react';
+import { lovableApi } from './api/lovableApi';
 
 interface AuthManagerProps {
   onAuthSuccess: (token: string) => void;
@@ -15,27 +16,42 @@ export const AuthManager: React.FC<AuthManagerProps> = ({ onAuthSuccess }) => {
   const [authToken, setAuthToken] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
+  const [oauthInProgress, setOauthInProgress] = useState(false);
 
-  const handleLovableAuth = () => {
-    // Open Lovable in a new window for authentication
-    const lovableWindow = window.open(
-      'https://lovable.dev/login',
-      'lovable-auth',
-      'width=600,height=700,scrollbars=yes,resizable=yes'
-    );
+  useEffect(() => {
+    // Handle OAuth callback
+    const urlParams = new URLSearchParams(window.location.search);
+    const code = urlParams.get('code');
+    const state = urlParams.get('state');
+    
+    if (code && state === 'lovable-oauth') {
+      handleOAuthCallback(code);
+    }
+  }, []);
 
-    // Listen for auth completion (this would need to be implemented with proper OAuth flow)
-    const checkAuth = setInterval(() => {
-      try {
-        if (lovableWindow?.closed) {
-          clearInterval(checkAuth);
-          // In a real implementation, you'd get the token from the OAuth flow
-          console.log('Lovable auth window closed');
-        }
-      } catch (e) {
-        console.log('Auth window check failed:', e);
-      }
-    }, 1000);
+  const handleOAuthCallback = async (code: string) => {
+    setIsLoading(true);
+    setOauthInProgress(true);
+    
+    try {
+      const token = await lovableApi.handleOAuthCallback(code);
+      localStorage.setItem('lovable_auth_token', token);
+      onAuthSuccess(token);
+      
+      // Clean up URL
+      window.history.replaceState({}, document.title, window.location.pathname);
+    } catch (error) {
+      setError('OAuth authentication failed. Please try again.');
+      console.error('OAuth callback error:', error);
+    } finally {
+      setIsLoading(false);
+      setOauthInProgress(false);
+    }
+  };
+
+  const handleLovableOAuth = () => {
+    setOauthInProgress(true);
+    lovableApi.initiateLovableOAuth();
   };
 
   const handleManualAuth = async () => {
@@ -48,10 +64,9 @@ export const AuthManager: React.FC<AuthManagerProps> = ({ onAuthSuccess }) => {
     setError('');
 
     try {
-      // Simulate auth validation
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
-      // In a real implementation, you'd validate the token with Lovable's API
+      const user = await lovableApi.authenticate(authToken);
+      localStorage.setItem('lovable_auth_token', authToken);
+      localStorage.setItem('lovable_user', JSON.stringify(user));
       onAuthSuccess(authToken);
     } catch (err) {
       setError('Authentication failed. Please check your token.');
@@ -59,6 +74,27 @@ export const AuthManager: React.FC<AuthManagerProps> = ({ onAuthSuccess }) => {
       setIsLoading(false);
     }
   };
+
+  const handleGitHubAuth = () => {
+    // GitHub OAuth for repository access
+    const githubOAuthUrl = `https://github.com/login/oauth/authorize?client_id=${lovableApi.getGitHubClientId()}&redirect_uri=${encodeURIComponent(window.location.origin)}&scope=repo,user&state=github-oauth`;
+    window.location.href = githubOAuthUrl;
+  };
+
+  if (oauthInProgress) {
+    return (
+      <div className="max-w-md mx-auto">
+        <Card>
+          <CardContent className="pt-6">
+            <div className="text-center">
+              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+              <p className="text-gray-600">Completing authentication...</p>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-md mx-auto">
@@ -69,18 +105,29 @@ export const AuthManager: React.FC<AuthManagerProps> = ({ onAuthSuccess }) => {
         <CardContent className="space-y-4">
           <Alert>
             <AlertDescription>
-              You need to authenticate with Lovable to access your projects and use the editor.
+              Authenticate with Lovable and authorize GitHub access to sync your repositories.
             </AlertDescription>
           </Alert>
 
           <div className="space-y-4">
             <Button 
-              onClick={handleLovableAuth}
+              onClick={handleLovableOAuth}
               className="w-full"
-              variant="outline"
+              variant="default"
+              disabled={isLoading}
             >
               <ExternalLink className="w-4 h-4 mr-2" />
-              Login with Lovable
+              OAuth with Lovable
+            </Button>
+
+            <Button 
+              onClick={handleGitHubAuth}
+              className="w-full"
+              variant="outline"
+              disabled={isLoading}
+            >
+              <Github className="w-4 h-4 mr-2" />
+              Authorize GitHub Access
             </Button>
 
             <div className="relative">
@@ -95,7 +142,10 @@ export const AuthManager: React.FC<AuthManagerProps> = ({ onAuthSuccess }) => {
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="auth-token">Authentication Token</Label>
+              <Label htmlFor="auth-token">
+                <Key className="w-4 h-4 inline mr-2" />
+                Authentication Token
+              </Label>
               <Input
                 id="auth-token"
                 type="password"
@@ -104,7 +154,7 @@ export const AuthManager: React.FC<AuthManagerProps> = ({ onAuthSuccess }) => {
                 onChange={(e) => setAuthToken(e.target.value)}
               />
               <p className="text-xs text-gray-500">
-                You can get this from your Lovable account settings
+                Get this from your Lovable account settings or use OAuth above
               </p>
             </div>
 
@@ -118,8 +168,9 @@ export const AuthManager: React.FC<AuthManagerProps> = ({ onAuthSuccess }) => {
               onClick={handleManualAuth}
               disabled={isLoading}
               className="w-full"
+              variant="secondary"
             >
-              {isLoading ? 'Authenticating...' : 'Connect'}
+              {isLoading ? 'Authenticating...' : 'Connect with Token'}
             </Button>
           </div>
         </CardContent>

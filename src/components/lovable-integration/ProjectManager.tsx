@@ -1,12 +1,13 @@
-
 import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
-import { Plus, GitBranch, ExternalLink, Trash2 } from 'lucide-react';
+import { Plus, GitBranch, ExternalLink, Trash2, Settings } from 'lucide-react';
 import { lovableApi } from './api/lovableApi';
+import { RepoSync } from './RepoSync';
+import { WebhookHandler } from './WebhookHandler';
 
 interface Project {
   id: string;
@@ -29,15 +30,28 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
   setUserProjects
 }) => {
   const [showAddProject, setShowAddProject] = useState(false);
+  const [selectedProjectForSync, setSelectedProjectForSync] = useState<string | null>(null);
   const [newProject, setNewProject] = useState({
     name: '',
-    repoUrl: ''
+    repoUrl: '',
+    githubToken: ''
   });
   const [isLoading, setIsLoading] = useState(false);
+  const [availableRepos, setAvailableRepos] = useState<any[]>([]);
 
   useEffect(() => {
     loadUserProjects();
+    loadGitHubRepos();
   }, []);
+
+  const loadGitHubRepos = async () => {
+    try {
+      const repos = await lovableApi.getGitHubRepositories();
+      setAvailableRepos(repos);
+    } catch (error) {
+      console.error('Failed to load GitHub repos:', error);
+    }
+  };
 
   const loadUserProjects = async () => {
     try {
@@ -78,7 +92,7 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
       setUserProjects(updatedProjects);
       localStorage.setItem('user_projects', JSON.stringify(updatedProjects));
 
-      setNewProject({ name: '', repoUrl: '' });
+      setNewProject({ name: '', repoUrl: '', githubToken: '' });
       setShowAddProject(false);
     } catch (error) {
       console.error('Failed to add project:', error);
@@ -110,6 +124,31 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
       localStorage.setItem('user_projects', JSON.stringify(updatedProjects));
     } catch (error) {
       console.error('Failed to sync project:', error);
+    }
+  };
+
+  const handleSetupSync = async (projectId: string) => {
+    const project = userProjects.find(p => p.id === projectId);
+    if (!project) return;
+
+    try {
+      await lovableApi.connectRepository(project.lovableProjectId || '', project.repoUrl);
+      
+      // Setup webhook
+      await lovableApi.setupWebhook(
+        project.lovableProjectId || '', 
+        `${window.location.origin}/api/webhooks/lovable`
+      );
+
+      const updatedProjects = userProjects.map(p =>
+        p.id === projectId
+          ? { ...p, status: 'connected' as const }
+          : p
+      );
+      setUserProjects(updatedProjects);
+      localStorage.setItem('user_projects', JSON.stringify(updatedProjects));
+    } catch (error) {
+      console.error('Failed to setup sync:', error);
     }
   };
 
@@ -145,6 +184,15 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
                 placeholder="https://github.com/username/repo"
                 value={newProject.repoUrl}
                 onChange={(e) => setNewProject(prev => ({ ...prev, repoUrl: e.target.value }))}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="github-token">GitHub Token</Label>
+              <Input
+                id="github-token"
+                placeholder="Your GitHub token"
+                value={newProject.githubToken}
+                onChange={(e) => setNewProject(prev => ({ ...prev, githubToken: e.target.value }))}
               />
             </div>
             <div className="flex gap-2">
@@ -185,6 +233,13 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
                 </p>
               )}
 
+              <WebhookHandler 
+                projectId={project.lovableProjectId || ''} 
+                onWebhookReceived={(payload) => {
+                  console.log('Webhook received for project:', project.name, payload);
+                }}
+              />
+
               <div className="flex gap-2">
                 <Button
                   size="sm"
@@ -198,10 +253,9 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
                 <Button
                   size="sm"
                   variant="outline"
-                  onClick={() => handleSyncProject(project.id)}
-                  disabled={project.status !== 'connected'}
+                  onClick={() => setSelectedProjectForSync(project.id)}
                 >
-                  Sync
+                  <Settings className="w-4 h-4" />
                 </Button>
                 <Button
                   size="sm"
@@ -215,6 +269,33 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
           </Card>
         ))}
       </div>
+
+      {selectedProjectForSync && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white p-6 rounded-lg max-w-2xl w-full mx-4 max-h-[80vh] overflow-auto">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-semibold">Repository Sync Settings</h3>
+              <Button 
+                variant="outline" 
+                size="sm"
+                onClick={() => setSelectedProjectForSync(null)}
+              >
+                Close
+              </Button>
+            </div>
+            
+            {(() => {
+              const project = userProjects.find(p => p.id === selectedProjectForSync);
+              return project ? (
+                <RepoSync 
+                  projectId={project.lovableProjectId || ''} 
+                  repoUrl={project.repoUrl} 
+                />
+              ) : null;
+            })()}
+          </div>
+        </div>
+      )}
 
       {userProjects.length === 0 && !showAddProject && (
         <Card>
